@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>ブロック崩し</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; }
+    body {
+      background: #0a0a1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100dvh;
+      font-family: 'Segoe UI', sans-serif;
+      color: #fff;
+      overflow: hidden;
+    }
+    #topbar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 6px;
+    }
+    h1 {
+      font-size: clamp(1rem, 4vw, 1.8rem);
+      background: linear-gradient(135deg, #00d2ff, #ff6ec7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: 4px;
+    }
+    #muteBtn {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      font-size: 1rem;
+      padding: 4px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      line-height: 1.4;
+      flex-shrink: 0;
+    }
+    #muteBtn:hover { background: rgba(255,255,255,0.15); }
+    #info {
+      display: flex;
+      gap: clamp(16px, 5vw, 40px);
+      margin-bottom: 8px;
+      font-size: clamp(0.75rem, 3vw, 1rem);
+      color: #ccc;
+    }
+    #info span { font-weight: bold; color: #fff; }
+    canvas {
+      border: 2px solid #2a2a4a;
+      border-radius: 8px;
+      box-shadow: 0 0 40px rgba(0, 210, 255, 0.15);
+      display: block;
+      touch-action: none;
+    }
+    #message {
+      margin-top: 10px;
+      font-size: clamp(0.75rem, 3vw, 1rem);
+      color: #aaa;
+      min-height: 20px;
+      text-align: center;
+      padding: 0 12px;
+    }
+    #controls {
+      margin-top: 6px;
+      font-size: clamp(0.6rem, 2.5vw, 0.8rem);
+      color: #444;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <h1>BLOCK BREAKER</h1>
+    <button id="muteBtn" onclick="toggleMute()">🔊</button>
+  </div>
+  <div id="info">
+    <div>スコア: <span id="scoreDisplay">0</span></div>
+    <div>残機: <span id="livesDisplay">3</span></div>
+    <div>レベル: <span id="levelDisplay">1</span></div>
+  </div>
+  <canvas id="canvas"></canvas>
+  <div id="message">タップまたはクリックでスタート</div>
+  <div id="controls">← → キー / マウス / タッチでパドルを操作</div>
+
+  <script>
+    // ============================================================
+    //  CANVAS & RESIZE
+    // ============================================================
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const BASE_W = 600, BASE_H = 500;
+    let W = BASE_W, H = BASE_H, scale = 1;
+
+    function resizeCanvas() {
+      const maxW = Math.min(window.innerWidth - 16, 600);
+      const maxH = window.innerHeight - 160;
+      scale = Math.min(maxW / BASE_W, maxH / BASE_H);
+      canvas.width  = BASE_W;
+      canvas.height = BASE_H;
+      canvas.style.width  = Math.floor(BASE_W * scale) + 'px';
+      canvas.style.height = Math.floor(BASE_H * scale) + 'px';
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    // ============================================================
+    //  AUDIO ENGINE
+    // ============================================================
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    let audioCtx = null, masterGain = null;
+    let muted = false, bgmTimer = null;
+
+    function initAudio() {
+      if (audioCtx) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        return;
+      }
+      audioCtx = new AudioCtx();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.35;
+      masterGain.connect(audioCtx.destination);
+    }
+
+    function toggleMute() {
+      muted = !muted;
+      if (masterGain) masterGain.gain.value = muted ? 0 : 0.35;
+      document.getElementById('muteBtn').textContent = muted ? '🔇' : '🔊';
+      if (!muted && state === 'playing') startBGM();
+    }
+
+    // 単音を鳴らす
+    function note(freq, start, dur, type = 'square', vol = 0.15) {
+      if (!audioCtx || !freq || freq <= 0) return;
+      const osc = audioCtx.createOscillator();
+      const g   = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      const attack = 0.008, release = Math.max(dur - 0.02, 0.02);
+      g.gain.setValueAtTime(0.001, start);
+      g.gain.linearRampToValueAtTime(vol, start + attack);
+      g.gain.exponentialRampToValueAtTime(0.001, start + release);
+      osc.connect(g);
+      g.connect(masterGain);
+      osc.start(start);
+      osc.stop(start + dur);
+    }
+
+    // --- SE ---
+    function sfxBlock(row) {
+      if (!audioCtx) return;
+      const freqs = [880, 784, 659, 587, 523];
+      note(freqs[row] || 659, audioCtx.currentTime, 0.07, 'square', 0.2);
+    }
+    function sfxPaddle() {
+      if (!audioCtx) return;
+      note(294, audioCtx.currentTime, 0.06, 'sine', 0.15);
+    }
+    function sfxWall() {
+      if (!audioCtx) return;
+      note(220, audioCtx.currentTime, 0.04, 'sine', 0.08);
+    }
+    function sfxLost() {
+      if (!audioCtx) return;
+      const t = audioCtx.currentTime;
+      [440, 370, 311, 233].forEach((f, i) => note(f, t + i * 0.13, 0.16, 'square', 0.2));
+    }
+    function sfxLevelUp() {
+      if (!audioCtx) return;
+      const t = audioCtx.currentTime;
+      [523, 659, 784, 1047, 1319].forEach((f, i) => note(f, t + i * 0.07, 0.1, 'square', 0.22));
+    }
+    function sfxGameOver() {
+      if (!audioCtx) return;
+      const t = audioCtx.currentTime;
+      [523, 440, 349, 261, 196].forEach((f, i) => note(f, t + i * 0.18, 0.2, 'sawtooth', 0.18));
+    }
+
+    // --- BGM (Ode to Joy loop / public domain) ---
+    const BPM = 130;
+    const Q = 60 / BPM; // 1拍の長さ(秒)
+
+    // [周波数Hz, 拍数]
+    const MELODY = [
+      [659,1],[659,1],[698,1],[784,1],
+      [784,1],[698,1],[659,1],[587,1],
+      [523,1],[523,1],[587,1],[659,1],
+      [659,1.5],[587,0.5],[587,2],
+      [659,1],[659,1],[698,1],[784,1],
+      [784,1],[698,1],[659,1],[587,1],
+      [523,1],[523,1],[587,1],[659,1],
+      [587,1.5],[523,0.5],[523,2],
+    ];
+
+    // ベース (各4拍)
+    const BASS = [
+      [165,4],[165,4],[110,4],[123,4],
+      [165,4],[165,4],[110,4],[165,4],
+    ];
+
+    // アルペジオ（中間層・8分音符）
+    const ARP = [
+      329,392,494,659,784,659,494,392,  // E chord
+      329,392,494,659,784,659,494,392,
+      220,261,329,523,659,523,329,261,  // Am chord
+      247,294,370,494,740,494,370,294,  // B chord
+      329,392,494,659,784,659,494,392,
+      329,392,494,659,784,659,494,392,
+      220,261,329,523,659,523,329,261,
+      220,261,329,523,659,523,329,261,
+    ];
+
+    function playBGMLoop(startTime) {
+      // メロディ
+      let t = startTime;
+      for (const [f, b] of MELODY) {
+        note(f, t, b * Q * 0.88, 'square', 0.12);
+        t += b * Q;
+      }
+      // ベース
+      t = startTime;
+      for (const [f, b] of BASS) {
+        note(f, t, b * Q * 0.65, 'triangle', 0.09);
+        t += b * Q;
+      }
+      // アルペジオ
+      const e8 = Q / 2;
+      t = startTime;
+      for (const f of ARP) {
+        note(f, t, e8 * 0.6, 'triangle', 0.05);
+        t += e8;
+      }
+      const totalBeats = MELODY.reduce((s, [,b]) => s + b, 0);
+      return totalBeats * Q;
+    }
+
+    function startBGM() {
+      if (!audioCtx || muted) return;
+      clearTimeout(bgmTimer);
+      const dur = playBGMLoop(audioCtx.currentTime + 0.05);
+      bgmTimer = setTimeout(() => {
+        if (state === 'playing' && !muted) startBGM();
+      }, (dur - 0.1) * 1000);
+    }
+
+    function stopBGM() {
+      clearTimeout(bgmTimer);
+      bgmTimer = null;
+    }
+
+    // ============================================================
+    //  GAME STATE
+    // ============================================================
+    let state = 'idle';
+    let score = 0, lives = 3, level = 1;
+
+    const paddle = { w: 100, h: 12, x: W/2 - 50, y: H - 30, speed: 7 };
+    const ball    = { r: 8, x: W/2, y: H - 50, dx: 0, dy: 0, speed: 5 };
+
+    const COLS = 10, ROWS = 5;
+    const BLOCK_W = 52, BLOCK_H = 18, BLOCK_PAD = 4;
+    const BLOCK_OFFSET_X = (W - (COLS * (BLOCK_W + BLOCK_PAD) - BLOCK_PAD)) / 2;
+    const BLOCK_OFFSET_Y = 50;
+
+    const BLOCK_COLORS = [
+      ['#ff4757','#ff6b81'],
+      ['#ff6348','#ff7f50'],
+      ['#ffa502','#ffbe76'],
+      ['#2ed573','#7bed9f'],
+      ['#1e90ff','#74b9ff'],
+    ];
+
+    let blocks = [], keys = {}, particles = [];
+    let touchActive = false, touchX = W / 2;
+
+    // ============================================================
+    //  GAME LOGIC
+    // ============================================================
+    function initBlocks() {
+      blocks = [];
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          const hp = ROWS - r;
+          blocks.push({
+            x: BLOCK_OFFSET_X + c * (BLOCK_W + BLOCK_PAD),
+            y: BLOCK_OFFSET_Y + r * (BLOCK_H + BLOCK_PAD),
+            w: BLOCK_W, h: BLOCK_H,
+            hp, maxHp: hp, row: r,
+            colors: BLOCK_COLORS[r],
+            alive: true
+          });
+        }
+      }
+    }
+
+    function resetBall() {
+      ball.x = paddle.x + paddle.w / 2;
+      ball.y = paddle.y - ball.r - 2;
+      ball.dx = 0; ball.dy = 0;
+    }
+
+    function launchBall() {
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI / 3;
+      const spd = ball.speed + (level - 1) * 0.4;
+      ball.dx = spd * Math.cos(angle);
+      ball.dy = spd * Math.sin(angle);
+    }
+
+    function spawnParticles(x, y, color) {
+      for (let i = 0; i < 12; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = Math.random() * 3 + 1;
+        particles.push({ x, y, dx: Math.cos(a)*s, dy: Math.sin(a)*s, r: Math.random()*3+1, life: 1, color });
+      }
+    }
+
+    function update() {
+      if (state !== 'playing') return;
+
+      // キー操作
+      if (keys['ArrowLeft'])  paddle.x -= paddle.speed;
+      if (keys['ArrowRight']) paddle.x += paddle.speed;
+      // タッチ追従
+      if (touchActive) paddle.x += (touchX - paddle.w/2 - paddle.x) * 0.25;
+      paddle.x = Math.max(0, Math.min(W - paddle.w, paddle.x));
+
+      if (ball.dx === 0 && ball.dy === 0) {
+        ball.x = paddle.x + paddle.w / 2;
+        ball.y = paddle.y - ball.r - 2;
+        return;
+      }
+
+      ball.x += ball.dx;
+      ball.y += ball.dy;
+
+      // 壁反射
+      if (ball.x - ball.r < 0)  { ball.x = ball.r;   ball.dx =  Math.abs(ball.dx); sfxWall(); }
+      if (ball.x + ball.r > W)  { ball.x = W-ball.r;  ball.dx = -Math.abs(ball.dx); sfxWall(); }
+      if (ball.y - ball.r < 0)  { ball.y = ball.r;   ball.dy =  Math.abs(ball.dy); sfxWall(); }
+
+      // パドル衝突
+      if (
+        ball.dy > 0 &&
+        ball.x > paddle.x && ball.x < paddle.x + paddle.w &&
+        ball.y + ball.r > paddle.y && ball.y + ball.r < paddle.y + paddle.h + 8
+      ) {
+        ball.y = paddle.y - ball.r;
+        const hit = (ball.x - (paddle.x + paddle.w/2)) / (paddle.w/2);
+        const spd = Math.sqrt(ball.dx**2 + ball.dy**2);
+        ball.dx = spd * Math.sin(hit * Math.PI/3);
+        ball.dy = -Math.abs(spd * Math.cos(hit * Math.PI/3));
+        sfxPaddle();
+      }
+
+      // ブロック衝突
+      for (const b of blocks) {
+        if (!b.alive) continue;
+        if (ball.x+ball.r > b.x && ball.x-ball.r < b.x+b.w &&
+            ball.y+ball.r > b.y && ball.y-ball.r < b.y+b.h) {
+          const oL = (ball.x+ball.r)-b.x, oR = (b.x+b.w)-(ball.x-ball.r);
+          const oT = (ball.y+ball.r)-b.y, oB = (b.y+b.h)-(ball.y-ball.r);
+          if (Math.min(oL,oR) < Math.min(oT,oB)) ball.dx = -ball.dx;
+          else ball.dy = -ball.dy;
+          b.hp--;
+          sfxBlock(b.row);
+          spawnParticles(b.x+b.w/2, b.y+b.h/2, b.colors[0]);
+          if (b.hp <= 0) { b.alive = false; score += b.maxHp * 10; }
+          break;
+        }
+      }
+
+      // パーティクル更新
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.dx; p.y += p.dy; p.dy += 0.1; p.life -= 0.04;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+
+      // ボール落下
+      if (ball.y - ball.r > H) {
+        lives--;
+        stopBGM();
+        sfxLost();
+        updateHUD();
+        if (lives <= 0) {
+          state = 'gameover';
+          sfxGameOver();
+          setMessage('GAME OVER — タップ/クリックでリスタート');
+        } else {
+          resetBall();
+          setMessage('タップ / クリック / スペースで再開');
+          state = 'paused';
+        }
+      }
+
+      // 全ブロック消去
+      if (blocks.every(b => !b.alive)) {
+        level++; score += 500;
+        stopBGM();
+        sfxLevelUp();
+        initBlocks(); resetBall(); updateHUD();
+        setMessage(`レベル ${level}！タップ/クリックで続行`);
+        state = 'paused';
+      }
+
+      updateHUD();
+    }
+
+    function updateHUD() {
+      document.getElementById('scoreDisplay').textContent = score;
+      document.getElementById('livesDisplay').textContent = lives;
+      document.getElementById('levelDisplay').textContent = level;
+    }
+    function setMessage(msg) { document.getElementById('message').textContent = msg; }
+
+    function startGame() {
+      score = 0; lives = 3; level = 1;
+      initBlocks(); resetBall(); particles = []; updateHUD();
+    }
+
+    function activate() {
+      initAudio();
+      if (state === 'idle' || state === 'gameover') {
+        startGame();
+        state = 'playing';
+        launchBall();
+        setMessage('');
+        startBGM();
+      } else if (state === 'paused') {
+        state = 'playing';
+        if (ball.dx === 0 && ball.dy === 0) launchBall();
+        setMessage('');
+        startBGM();
+      }
+    }
+
+    // ============================================================
+    //  DRAW
+    // ============================================================
+    function rr(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x+r, y);
+      ctx.lineTo(x+w-r, y); ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+      ctx.lineTo(x+w, y+h-r); ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+      ctx.lineTo(x+r, y+h); ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+      ctx.lineTo(x, y+r); ctx.quadraticCurveTo(x, y, x+r, y);
+      ctx.closePath();
+    }
+
+    function draw() {
+      // 背景
+      ctx.fillStyle = '#0d0d20';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < W; x += 30) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+      for (let y = 0; y < H; y += 30) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+      // ブロック
+      blocks.forEach(b => {
+        if (!b.alive) return;
+        const ratio = b.hp / b.maxHp;
+        const g = ctx.createLinearGradient(b.x, b.y, b.x, b.y+b.h);
+        g.addColorStop(0, b.colors[0]); g.addColorStop(1, b.colors[1]);
+        ctx.globalAlpha = 0.4 + ratio * 0.6;
+        ctx.fillStyle = g;
+        ctx.shadowColor = b.colors[0]; ctx.shadowBlur = ratio > 0.5 ? 8 : 3;
+        rr(b.x, b.y, b.w, b.h, 3); ctx.fill();
+        if (b.hp > 1) {
+          ctx.globalAlpha = 0.9; ctx.fillStyle = '#fff';
+          ctx.font = 'bold 10px Segoe UI';
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(b.hp, b.x+b.w/2, b.y+b.h/2);
+        }
+        ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+      });
+
+      // パーティクル
+      particles.forEach(p => {
+        ctx.save(); ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+      });
+
+      // パドル
+      const pg = ctx.createLinearGradient(paddle.x, paddle.y, paddle.x, paddle.y+paddle.h);
+      pg.addColorStop(0, '#00eaff'); pg.addColorStop(1, '#005fff');
+      ctx.fillStyle = pg; ctx.shadowColor = '#00d2ff'; ctx.shadowBlur = 15;
+      rr(paddle.x, paddle.y, paddle.w, paddle.h, 6); ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // ボール
+      if (state !== 'gameover') {
+        const bg = ctx.createRadialGradient(ball.x-2, ball.y-2, 1, ball.x, ball.y, ball.r);
+        bg.addColorStop(0, '#fff'); bg.addColorStop(0.4, '#ff6ec7'); bg.addColorStop(1, '#c0006e');
+        ctx.shadowColor = '#ff6ec7'; ctx.shadowBlur = 20;
+        ctx.fillStyle = bg;
+        ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2); ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+
+      // タイトル / ゲームオーバー
+      if (state === 'idle' || state === 'gameover') {
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = state === 'gameover' ? '#ff4757' : '#00d2ff';
+        ctx.font = 'bold 48px Segoe UI';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 30;
+        ctx.fillText(state === 'gameover' ? 'GAME OVER' : 'BLOCK BREAKER', W/2, H/2 - 20);
+        ctx.shadowBlur = 0;
+        if (state === 'gameover') {
+          ctx.fillStyle = '#fff'; ctx.font = '22px Segoe UI';
+          ctx.fillText(`スコア: ${score}`, W/2, H/2 + 38);
+        }
+        ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '18px Segoe UI';
+        ctx.fillText('タップ / クリックでスタート', W/2, H/2 + (state === 'gameover' ? 76 : 28));
+      }
+    }
+
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+    // ============================================================
+    //  INPUT
+    // ============================================================
+    document.addEventListener('keydown', e => {
+      keys[e.key] = true;
+      if (e.key === ' ') { e.preventDefault(); activate(); }
+    });
+    document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+    canvas.addEventListener('mousemove', e => {
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / scale;
+      paddle.x = Math.max(0, Math.min(W - paddle.w, x - paddle.w/2));
+    });
+    canvas.addEventListener('click', () => activate());
+
+    function getTouchX(e) {
+      const rect = canvas.getBoundingClientRect();
+      return (e.changedTouches[0].clientX - rect.left) / scale;
+    }
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault(); touchActive = true; touchX = getTouchX(e); activate();
+    }, { passive: false });
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault(); touchX = getTouchX(e);
+    }, { passive: false });
+    canvas.addEventListener('touchend', e => {
+      e.preventDefault(); touchActive = false;
+    }, { passive: false });
+
+    loop();
+  </script>
+</body>
+</html>
