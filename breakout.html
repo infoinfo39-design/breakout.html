@@ -533,7 +533,7 @@
     });
     document.addEventListener('keyup', e => { keys[e.key] = false; });
 
-    canvas.addEventListener('mousemove', e => {
+    document.addEventListener('mousemove', e => {
       const rect = canvas.getBoundingClientRect();
       const x = (e.clientX - rect.left) / scale;
       paddle.x = Math.max(0, Math.min(W - paddle.w, x - paddle.w/2));
