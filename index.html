@@ -126,7 +126,7 @@
     // ============================================================
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     let audioCtx = null, masterGain = null;
-    let muted = false, bgmTimer = null;
+    let muted = false, bgmTimer = null, bgmOscs = [];
 
     function initAudio() {
       if (audioCtx) return;
@@ -152,16 +152,12 @@
 
     function toggleMute() {
       muted = !muted;
-      if (masterGain && audioCtx) {
-        const now = audioCtx.currentTime;
-        masterGain.gain.cancelScheduledValues(now);
-        masterGain.gain.linearRampToValueAtTime(muted ? 0 : 0.35, now + 0.05);
-      }
+      if (masterGain) masterGain.gain.value = muted ? 0 : 0.35;
       document.getElementById('muteBtn').textContent = muted ? '🔇' : '🔊';
       if (!muted && state === 'playing') startBGM();
     }
 
-    // 単音を鳴らす
+    // SE用
     function note(freq, start, dur, type = 'square', vol = 0.15) {
       if (!audioCtx || !freq || freq <= 0) return;
       const osc = audioCtx.createOscillator();
@@ -174,6 +170,25 @@
       g.gain.exponentialRampToValueAtTime(0.001, start + release);
       osc.connect(g);
       g.connect(masterGain);
+      osc.start(start);
+      osc.stop(start + dur);
+    }
+
+    // BGM用（オシレーターを追跡して即停止できるようにする）
+    function bgmNote(freq, start, dur, type = 'square', vol = 0.15) {
+      if (!audioCtx || !freq || freq <= 0) return;
+      const osc = audioCtx.createOscillator();
+      const g   = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      const attack = 0.008, release = Math.max(dur - 0.02, 0.02);
+      g.gain.setValueAtTime(0.001, start);
+      g.gain.linearRampToValueAtTime(vol, start + attack);
+      g.gain.exponentialRampToValueAtTime(0.001, start + release);
+      osc.connect(g);
+      g.connect(masterGain);
+      bgmOscs.push(osc);
+      osc.onended = () => { const i = bgmOscs.indexOf(osc); if (i !== -1) bgmOscs.splice(i, 1); };
       osc.start(start);
       osc.stop(start + dur);
     }
@@ -243,39 +258,20 @@
     ];
 
     function playBGMLoop(startTime) {
-      // メロディ
       let t = startTime;
-      for (const [f, b] of MELODY) {
-        note(f, t, b * Q * 0.88, 'square', 0.12);
-        t += b * Q;
-      }
-      // ベース
+      for (const [f, b] of MELODY) { bgmNote(f, t, b * Q * 0.88, 'square', 0.12); t += b * Q; }
       t = startTime;
-      for (const [f, b] of BASS) {
-        note(f, t, b * Q * 0.65, 'triangle', 0.09);
-        t += b * Q;
-      }
-      // アルペジオ
+      for (const [f, b] of BASS) { bgmNote(f, t, b * Q * 0.65, 'triangle', 0.09); t += b * Q; }
       const e8 = Q / 2;
       t = startTime;
-      for (const f of ARP) {
-        note(f, t, e8 * 0.6, 'triangle', 0.05);
-        t += e8;
-      }
-      const totalBeats = MELODY.reduce((s, [,b]) => s + b, 0);
-      return totalBeats * Q;
+      for (const f of ARP) { bgmNote(f, t, e8 * 0.6, 'triangle', 0.05); t += e8; }
+      return MELODY.reduce((s, [,b]) => s + b, 0) * Q;
     }
 
     function startBGM() {
       if (!audioCtx || muted) return;
       clearTimeout(bgmTimer);
-      // 既存の音をフェードアウトしてから新ループをフェードイン
-      const now = audioCtx.currentTime;
-      masterGain.gain.cancelScheduledValues(now);
-      masterGain.gain.setValueAtTime(masterGain.gain.value, now);
-      masterGain.gain.linearRampToValueAtTime(0, now + 0.08);
-      masterGain.gain.linearRampToValueAtTime(0.35, now + 0.18);
-      const startAt = now + 0.18;
+      const startAt = audioCtx.currentTime + 0.05;
       const dur = playBGMLoop(startAt);
       bgmTimer = setTimeout(() => {
         if (state === 'playing' && !muted) startBGM();
@@ -285,12 +281,9 @@
     function stopBGM() {
       clearTimeout(bgmTimer);
       bgmTimer = null;
-      if (masterGain && audioCtx) {
-        const now = audioCtx.currentTime;
-        masterGain.gain.cancelScheduledValues(now);
-        masterGain.gain.setValueAtTime(masterGain.gain.value, now);
-        masterGain.gain.linearRampToValueAtTime(0, now + 0.08);
-      }
+      const now = audioCtx ? audioCtx.currentTime : 0;
+      bgmOscs.forEach(osc => { try { osc.stop(now); } catch(e) {} });
+      bgmOscs = [];
     }
 
     function pauseBGM() { stopBGM(); }
