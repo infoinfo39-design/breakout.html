@@ -534,25 +534,23 @@
     document.addEventListener('keyup', e => { keys[e.key] = false; });
 
     document.addEventListener('mousemove', e => {
-      const rect = canvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / scale;
+      const x = (e.clientX / window.innerWidth) * W;
       paddle.x = Math.max(0, Math.min(W - paddle.w, x - paddle.w/2));
     });
     canvas.addEventListener('click', () => activate());
 
     function getTouchX(e) {
-      const rect = canvas.getBoundingClientRect();
-      return (e.changedTouches[0].clientX - rect.left) / scale;
+      return (e.changedTouches[0].clientX / window.innerWidth) * W;
     }
     canvas.addEventListener('touchstart', e => {
       e.preventDefault(); touchActive = true; touchX = getTouchX(e); activate();
     }, { passive: false });
-    canvas.addEventListener('touchmove', e => {
+    document.addEventListener('touchmove', e => {
       e.preventDefault(); touchX = getTouchX(e);
     }, { passive: false });
-    canvas.addEventListener('touchend', e => {
-      e.preventDefault(); touchActive = false;
-    }, { passive: false });
+    document.addEventListener('touchend', e => {
+      touchActive = false;
+    });
 
     loop();
   </script>
