@@ -126,13 +126,10 @@
     // ============================================================
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     let audioCtx = null, masterGain = null;
-    let muted = false, bgmTimer = null, bgmLoopEndTime = 0;
+    let muted = false, bgmTimer = null;
 
     function initAudio() {
-      if (audioCtx) {
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        return;
-      }
+      if (audioCtx) return;
       audioCtx = new AudioCtx();
       masterGain = audioCtx.createGain();
       masterGain.gain.value = 0.35;
@@ -155,7 +152,11 @@
 
     function toggleMute() {
       muted = !muted;
-      if (masterGain) masterGain.gain.value = muted ? 0 : 0.35;
+      if (masterGain && audioCtx) {
+        const now = audioCtx.currentTime;
+        masterGain.gain.cancelScheduledValues(now);
+        masterGain.gain.linearRampToValueAtTime(muted ? 0 : 0.35, now + 0.05);
+      }
       document.getElementById('muteBtn').textContent = muted ? '🔇' : '🔊';
       if (!muted && state === 'playing') startBGM();
     }
@@ -268,9 +269,14 @@
     function startBGM() {
       if (!audioCtx || muted) return;
       clearTimeout(bgmTimer);
-      const startAt = audioCtx.currentTime + 0.05;
+      // 既存の音をフェードアウトしてから新ループをフェードイン
+      const now = audioCtx.currentTime;
+      masterGain.gain.cancelScheduledValues(now);
+      masterGain.gain.setValueAtTime(masterGain.gain.value, now);
+      masterGain.gain.linearRampToValueAtTime(0, now + 0.08);
+      masterGain.gain.linearRampToValueAtTime(0.35, now + 0.18);
+      const startAt = now + 0.18;
       const dur = playBGMLoop(startAt);
-      bgmLoopEndTime = startAt + dur;
       bgmTimer = setTimeout(() => {
         if (state === 'playing' && !muted) startBGM();
       }, (dur - 0.1) * 1000);
@@ -279,27 +285,16 @@
     function stopBGM() {
       clearTimeout(bgmTimer);
       bgmTimer = null;
+      if (masterGain && audioCtx) {
+        const now = audioCtx.currentTime;
+        masterGain.gain.cancelScheduledValues(now);
+        masterGain.gain.setValueAtTime(masterGain.gain.value, now);
+        masterGain.gain.linearRampToValueAtTime(0, now + 0.08);
+      }
     }
 
-    function pauseBGM() {
-      clearTimeout(bgmTimer);
-      bgmTimer = null;
-      if (audioCtx) audioCtx.suspend();
-    }
-
-    function resumeBGM() {
-      if (!audioCtx || muted) return;
-      audioCtx.resume().then(() => {
-        const remaining = (bgmLoopEndTime - audioCtx.currentTime - 0.1) * 1000;
-        if (remaining > 200) {
-          bgmTimer = setTimeout(() => {
-            if (state === 'playing' && !muted) startBGM();
-          }, remaining);
-        } else {
-          startBGM();
-        }
-      });
-    }
+    function pauseBGM() { stopBGM(); }
+    function resumeBGM() { startBGM(); }
 
     // ============================================================
     //  GAME STATE
@@ -483,13 +478,8 @@
         state = 'playing';
         setMessage('');
         document.getElementById('pauseBtn').textContent = '⏸';
-        if (ball.dx === 0 && ball.dy === 0) {
-          launchBall();
-          if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-          startBGM();
-        } else {
-          resumeBGM();
-        }
+        if (ball.dx === 0 && ball.dy === 0) launchBall();
+        startBGM();
       }
     }
 
